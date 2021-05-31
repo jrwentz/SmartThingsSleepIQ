@@ -35,9 +35,14 @@ preferences {
     page(name: "authPage", title: "SleepIQ Login")
     page(name: "authResultsPage", title: "SleepIQ Login Status")
     page(name: "bedSelectPage", title: "SleepIQ Bed Selection")
-    page(name: "nameBedPage", title: "SleepIQ Bed Naming")
-    page(name: "createDevicePage", title: "SleepIQ Device Creation")
+    page(name: "newBedPage", title: "SleepIQ Bed Configuration")
+    page(name: "createDevicesPage", title: "SleepIQ Device Creation")
+    page(name: "configureBedPage", title: "SleepIQ Bed Configuration")
 }
+
+//////////////////////////////////
+// Preference Pages
+//////////////////////////////////
 
 def mainPage() {
 	//TODO: Check if logged in
@@ -57,7 +62,7 @@ def mainPage() {
     state.lastPage = "mainPage"
     
     dynamicPage(name: "mainPage", nextPage: "", uninstall: true, install: true) {
-        def beds = refreshBeds()
+        def beds = refreshBedStatus()
 
         section("App Info") {
             paragraph "Sleep Number SmartIQ Integration\nAuthor: Jonathan Wentz"
@@ -70,6 +75,7 @@ def mainPage() {
 
         }
 
+		/*
         section("Beds") {
         	if(beds) {
             	paragraph title: "Connected Beds", "Found $beds.size bed(s)"
@@ -77,12 +83,16 @@ def mainPage() {
             	paragraph title: "Connected Beds", "No Beds Connected"
             }
         }
+        */
     }
 }
 
 def authPage() {
 	log.trace "[SmartThingsSleepIQ:authPage] "
 	state.installMessage = ""
+    state.beds = []
+    state.rightSleeperName = null
+    state.leftSleeperName = null
 	return dynamicPage(name: "authPage", title: "Connect to SleepIQ", nextPage:"authResultsPage", uninstall:false, install: false, submitOnChange: true) {
 		section("Login Credentials"){
 			input("username", "email", title: "Username", description: "SmartIQ Username (email address)")
@@ -95,6 +105,7 @@ def authResultsPage() {
 	log.trace "[SmartThingsSleepIQ:authResultsPage] Login result next page: ${state.lastPage}"
     if(login()) {
     	return bedSelectPage()
+        //return configureBedPage()
     } else {
     	return dynamicPage(name: "authResultsPage", title: "Login Error", install:false, uninstall:false) {
 			section(""){
@@ -110,14 +121,17 @@ def authResultsPage() {
 
 def bedSelectPage() {
 	log.trace "[SmartThingsSleepIQ:bedSelectPage]"
-    def beds = getBedData()
+    state.beds = getBeds()
+    
+    log.debug "[SmartThingsSleepIQ:bedSelectPage] Found $state.beds.size bed(s)"
     
     dynamicPage(name: "bedSelectPage") {
-    	if(beds.size > 0) {
-        	beds.each { bed ->
-            	section("Bed ID: $bed.bedId") {
-                	settings.bedId = bed.bedId
-                	href page: "nameBedPage", title: "Name Bed Sides", description: "Name the right and left sides of the bed", params: [bedId: bed.bedId]
+    	if(state.beds.size > 0) {
+        	state.beds.each { bed ->
+            	section("Bed: $bed.name") {
+                	state.bedId = bed.bedId //HACK: Temporary
+                    paragraph "Size: $bed.size\nModel: $bed.model"
+                	href page: "newBedPage", title: "Select This Bed", params: [bedId: bed.bedId]
                 }
             }
         } else {
@@ -128,39 +142,70 @@ def bedSelectPage() {
     }
 }
 
-def nameBedPage(params) {
-	log.trace "[SmartThingsSleepIQ:nameBedPage] params: ${params}"
+def newBedPage(params) {
+	log.trace "[SmartThingsSleepIQ:newBedPage] params: ${params}"
     
-    settings.newRightSideName = null
-    settings.newLeftSideName = null
-    
-    dynamicPage(name: "nameBedPage", nextPage: "createDevicePage") {
-		section {
-			paragraph "Bed ID: $settings.bedId"
-			input "newRightSideName", "text", title: "Right Side", description: "Who sleeps on the right side of the bed?", defaultValue: "", required: true
-            input "newLeftSideName", "text", title: "Left Side", description: "Who sleeps on the left side of the bed?", defaultValue: "", required: true
-		}
-		section {
-			href "createDevicePage", title: "Create Device", description: "Click here once you have entered the names", params: [bedId: params.bedId]
-		}
+    settings.bedName = null
+    settings.rightSleeperName = null
+    settings.leftSleeperName = null
+    settings.bedId = params.bedId
+    if(!settings.bedId){
+    	settings.bedId = state.bedId
     }
+    log.trace "[SmartThingsSleepIQ:newBedPage] Looking up bed: $settings.bedId"
     
+    //state.beds = getBeds()
+    def bed = state.beds.find { it.bedId == settings.bedId }
+    if(bed) {
+        log.trace "[SmartThingsSleepIQ:newBedPage] Found bed: $bed"
+
+        def sleepers = getSleepers()
+        def rightSleeperName = sleepers[bed.sleeperRightId].firstName
+        def leftSleeperName = sleepers[bed.sleeperLeftId].firstName
+        log.trace "[SmartThingsSleepIQ:newBedPage] Right: $rightSleeperName, Left: $leftSleeperName"
+
+        dynamicPage(name: "newBedPage", nextPage: "createDevicesPage") {
+            section ("Bed: $bed.name") {
+                paragraph "Bed ID: $bed.bedId\nSize: $bed.size\nModel: $bed.model"
+                input "bedName", "text", title: "Bed Name", description: "What is the name of this bed?", defaultValue: bed.name, required: true
+                input "rightSleeperName", "text", title: "Right Side", description: "Who sleeps on the right side of the bed?", defaultValue: rightSleeperName, required: true
+                input "leftSleeperName", "text", title: "Left Side", description: "Who sleeps on the left side of the bed?", defaultValue: leftSleeperName, required: true
+            }
+        }
+    } else {
+    	log.error "[SmartThingsSleepIQ:newBedPage] Could not find bed: $settings.bedId"
+    }
 }
 
-def createDevicePage(params) {
-	log.trace "[SmartThingsSleepIQ:createDevicePage] bedId: $params.bedId"
-    def rightDeviceId = "sleepiq.${settings.bedId}.right"
-    def leftDeviceId = "sleepiq.${settings.bedId}.left"
+def createDevicesPage() {
+	log.trace "[SmartThingsSleepIQ:createDevicePage]"
+    
+    def bedId = state.bedId
+    log.debug "Using BedId: $bedId"
+	def rightDeviceId = "sleepiq." + bedId + ".right"
+	def leftDeviceId = "sleepiq." + bedId + ".left"
     
     //TODO: Create Child Devices
-    log.trace "[SmartThingsSleepIQ:createDevicePage] Creating SleepIQ Right Side: $rightDeviceId"
-    log.trace "[SmartThingsSleepIQ:createDevicePage] Creating SleepIQ Left Side: $leftDeviceId"
+    log.debug "[SmartThingsSleepIQ:createDevicePage] Creating SleepIQ on $settings.bedName Right Side: $rightDeviceId for $settings.rightSleeperName"
+    //def rightDevice = addChildDevice(
     
-    settings.newRightSideName = null
-    settings.newLeftSideName = null
+    log.debug "[SmartThingsSleepIQ:createDevicePage] Creating SleepIQ on $settings.bedName Left Side: $leftDeviceId for $settings.leftSleeperName"
+    
+    
+    
+    
+    settings.rightSleeperName = null
+    settings.leftSleeperName = null
+    settings.bedName = null
+    settings.bedId = null
     
     mainPage()
 }
+
+
+//////////////////////////////////
+// Installation
+//////////////////////////////////
 
 def installed() {
 	log.debug "Installed with settings: ${settings}"
@@ -183,21 +228,21 @@ def initialize() {
 
 
 
-//API Calls
+//////////////////////////////////
+// API Calls
+//////////////////////////////////
 private def ApiHost() { "prod-api.sleepiq.sleepnumber.com" }
-
-private def ApiUriBase() { "https://prod-api.sleepiq.sleepnumber.com" }
-
+private def ApiUriBase() { "https://prod-api.sleepiq.sleepnumber.com/rest/" }
 private def ApiUserAgent() { "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/28.0.1500.95 Safari/537.36" }
 
 
 private def login() {
-  log.trace "[SmartThingsSleepIQ:login] Logging in..."
+  log.debug "[SmartThingsSleepIQ:login] Logging in..."
   state.session = null
   
   try {
     def loginParams = [
-      uri: ApiUriBase() + '/rest/login',
+      uri: ApiUriBase() + 'login',
       headers: [
         'Content-Type': 'application/json;charset=UTF-8',
         'Host': ApiHost(),
@@ -215,10 +260,10 @@ private def login() {
         response.getHeaders('Set-Cookie').each {
           state.session.cookies = state.session.cookies + it.value.split(';')[0] + ';'
         }
-      	//refreshBeds()
+        log.info "[SmartThingsSleepIQ:login] Login successful"
         return true
       } else {
-        log.trace "[SmartThingsSleepIQ:login] Login failed: ($response.status) $response.data"
+        log.error "[SmartThingsSleepIQ:login] Login failed: ($response.status) $response.data"
         state.session = null
         return false
       }
@@ -230,6 +275,7 @@ private def login() {
   }
 }
 
+
 private def isLoggedIn() {
 	log.debug "[SmartThingsSleepIQ:isLoggedIn] Determining if the user needs to log in"
 	if(!state.session || !state.session?.key){
@@ -237,23 +283,23 @@ private def isLoggedIn() {
 		return false
 	}
     
-    if(getBedData()) {
-    	log.trace "[SmartThingsSleepIQ:isLoggedIn] Successfully refreshed BedData, so login is working"
+    if(getBedStatus()) {
+    	log.trace "[SmartThingsSleepIQ:isLoggedIn] Successfully refreshed Bed Status, so login is working"
     	return true
     } else {
-    	log.trace "[SmartThingsSleepIQ:isLoggedIn] Could not refresh bed data, so we need to login again"
+    	log.trace "[SmartThingsSleepIQ:isLoggedIn] Could not refresh Bed Status, so we need to login again"
     	return false
     }
 }
 
 
-def refreshBeds() {
+def refreshBedStatus() {
 	if(!isLoggedIn()) {
     	login()
     }
     
-    log.debug "[SmartThingsSleepIQ:refreshBeds] Refreshing beds..."
-    def beds = getBedData()
+    log.debug "[SmartThingsSleepIQ:refreshBedStatus] Refreshing Beds Status..."
+    def beds = getBedStatus()
     
     if(beds.size > 0) {
     	return beds
@@ -262,13 +308,62 @@ def refreshBeds() {
     }
 }
 
-def getBedData() {
-	log.trace "[SmartThingsSleepIQ:getBedData]"
-    def bedData = []
+
+def getBedStatus() {
+	log.trace "[SmartThingsSleepIQ:getBedStatus]"
+
+	def bedStatus = []
+    def results = getSleepIqRestApi("bed/familyStatus")
+    
+    if(results?.beds) {
+    	log.trace "[SmartThingsSleepIQ:getBedStatus] Status for $results.beds.size bed(s)"
+    	bedStatus = results.beds
+    }
+    
+    return bedStatus
+}
+
+
+def getBeds() {
+	log.trace "[SmartThingsSleepIQ:getBeds]"
+    
+    def beds = []
+    def results = getSleepIqRestApi("bed")
+    
+    if(results?.beds) {
+    	log.debug "[SmartThingsSleepIQ:getBeds] Found $results.beds.size bed(s)"
+        beds = results.beds
+    }
+    
+    return beds
+}
+
+
+def getSleepers() {
+	log.trace "[SmartThingsSleepIQ:getSleepers]"
+    
+    def sleepers = [:]
+    def results = getSleepIqRestApi("sleeper")
+    
+    if(results?.sleepers) {
+    	log.debug "[SmartThingsSleepIQ:getSleepers] Found $results.sleepers.size sleepers(s)"
+        results.sleepers.each { sleeper ->
+        	log.trace "[SmartThingsSleepIQ:getSleepers] Loading sleeper data for $sleeper.firstName ($sleeper.sleeperId)"
+        	sleepers[sleeper.sleeperId] = sleeper
+        }
+    }
+    
+    return sleepers
+}
+
+
+def getSleepIqRestApi(String uri) {
+	//log.trace "[SmartThingsSleepIQ:getSleepIqRestApi]"
+    def apiResults = [:]
     
     try {
-    	def familyStatusParams = [
-        	uri: ApiUriBase() + '/rest/bed/familyStatus?_k=' + state.session?.key,
+    	def apiParams = [
+        	uri: ApiUriBase() + uri + '?_k=' + state.session?.key,
 			headers: [
 				'Content-Type': 'application/json;charset=UTF-8',
                 'Host': ApiHost(),
@@ -278,19 +373,17 @@ def getBedData() {
             ]
         ]
         
-        httpGet(familyStatusParams) { response -> 
+        httpGet(apiParams) { response -> 
 			if (response.status == 200) {
-            	log.trace "[SmartThingsSleepIQ:getBedData] Successfully retrieved familyStatus: $response.data"
-				bedData = response.data.beds
+            	//log.trace "[SmartThingsSleepIQ:getSleepIqRestApi] GET $uri successful: $response.data"
+				apiResults = response.data
 			} else {
-            	log.error "[SmartThingsSleepIQ:getBedData] Error getting familyStatus, REST request unsuccessful: ($response.status): $response.data"
-                state.session = null
+            	log.error "[SmartThingsSleepIQ:getSleepIqRestApi] Error GET $uri, REST request unsuccessful: ($response.status): $response.data"
 			}
         }
     } catch (Exception ex) {
-    	log.error "[SmartThingsSleepIQ:getBedData] Error getting familyStatus: $ex"
+    	log.error "[SmartThingsSleepIQ:getSleepIqRestApi] Error GET $uri: $ex"
     }
     
-    return bedData
+    return apiResults
 }
-
