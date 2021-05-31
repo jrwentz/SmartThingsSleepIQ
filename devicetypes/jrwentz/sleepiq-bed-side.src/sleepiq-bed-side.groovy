@@ -16,7 +16,7 @@ metadata {
 	definition (name: "SleepIQ.Bed.Side", namespace: "jrwentz", author: "Jonathan Wentz", cstHandler: true) {
 		capability "Presence Sensor"
 		//capability "Sleep Sensor"
-		capability "Switch"
+		//capability "Switch"
 		capability "Switch Level"
         
         attribute "bedId", "string"
@@ -52,7 +52,6 @@ def parse(String description) {
 	log.debug "Parsing '${description}'"
 	// TODO: handle 'presence' attribute
 	// TODO: handle 'sleeping' attribute
-	// TODO: handle 'switch' attribute
 	// TODO: handle 'level' attribute
 
 }
